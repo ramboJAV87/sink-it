@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Sink It",
+    "slug": "sinkit",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B1410",
+    "scheme": "sinkit",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rustbeltstandards.sinkit"
+    },
+    "android": {
+      "package": "com.rustbeltstandards.sinkit",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1410",
+        "foregroundImage": "./assets/adaptive-icon.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#0B1410"
+        }
+      ]
+    ]
+  }
+}

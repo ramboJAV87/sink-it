@@ -1,0 +1,66 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`physics golden-path regression reproduces the exact same final position, holed, and score for 10 fixed (seed, drop) pairs 1`] = `
+[
+  {
+    "holed": false,
+    "score": 25,
+    "x": 17.966714,
+    "y": 23.955888,
+  },
+  {
+    "holed": false,
+    "score": 32,
+    "x": 19.532807,
+    "y": 34.203886,
+  },
+  {
+    "holed": false,
+    "score": 27,
+    "x": 23.115047,
+    "y": 39.373933,
+  },
+  {
+    "holed": false,
+    "score": 49,
+    "x": 12.526971,
+    "y": 37.439057,
+  },
+  {
+    "holed": false,
+    "score": 31,
+    "x": 12.490402,
+    "y": 28.639222,
+  },
+  {
+    "holed": false,
+    "score": 22,
+    "x": 20.122995,
+    "y": 41.079509,
+  },
+  {
+    "holed": false,
+    "score": 19,
+    "x": 23.905943,
+    "y": 40.098671,
+  },
+  {
+    "holed": false,
+    "score": 0,
+    "x": 23.085801,
+    "y": 39.94898,
+  },
+  {
+    "holed": false,
+    "score": 38,
+    "x": 22.984321,
+    "y": 30.569511,
+  },
+  {
+    "holed": false,
+    "score": 15,
+    "x": 16.006222,
+    "y": 24.349876,
+  },
+]
+`;
