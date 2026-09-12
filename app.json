@@ -35,6 +35,12 @@
           "backgroundColor": "#0B1410"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "63aa19ef-260e-41b7-98de-da4c58ae99d2"
+      }
+    },
+    "owner": "rambojav87"
   }
 }
