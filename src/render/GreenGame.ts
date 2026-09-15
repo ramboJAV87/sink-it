@@ -8,6 +8,7 @@
 // texture so it doesn't look soft on high-density screens.
 
 import {
+  BlurStyle,
   ClipOp,
   PaintStyle,
   Skia,
@@ -16,11 +17,12 @@ import {
   type SkFont,
   type SkImage,
   type SkPaint,
+  type SkPath,
 } from "@shopify/react-native-skia";
 import { CUP_R, G, grad, inside, outline, score, simulate, type Level, type SimResult } from "../engine/physics";
 import { buildScene, type Scene } from "./scene";
 import { buildShadeImage } from "./shade";
-import { fillPaint, shade2, strokePaint, withDash, withGlow } from "./paintUtils";
+import { shade2, withDash } from "./paintUtils";
 
 export type GameMode = "daily" | "play" | "custom";
 
@@ -95,8 +97,19 @@ export class GreenGame {
   private dpr = 1;
   widthDp = 0;
   heightDp = 0;
-  private shadeImage: SkImage | null = null;
+  // Static per-level layer (terrain shading + outline/fringe + trees/bunkers/crowd at rest +
+  // resting-spot dots) baked to one offscreen image at layout time, so a normal frame costs a
+  // single drawImageRect instead of ~400+ individual vector draw calls.
+  private backgroundImage: SkImage | null = null;
   private scene: Scene = { trees: [], bunkers: [], crowd: [] };
+
+  // Coarse cache of netPull() results (terrain gradient minus the resting threshold), built once
+  // per level. Flow particles and resting dots sample this instead of recomputing grad() — which
+  // walks every terrain feature — on every one of ~170 particles every frame.
+  private static readonly PULL_CELL = 0.5;
+  private pullGrid: Float32Array | null = null;
+  private pullGridW = 0;
+  private pullGridH = 0;
 
   mode: GameMode = "play";
   balls = 0;
@@ -161,10 +174,6 @@ export class GreenGame {
     this.reduceMotion = v;
   }
 
-  private thr(): number {
-    return 18 / this.L.stimp / G;
-  }
-
   setup(level: Level, mode: GameMode, ballsCount: number) {
     this.L = level;
     this.mode = mode;
@@ -182,9 +191,13 @@ export class GreenGame {
     this.editMarkers = null;
     this.scene = buildScene(level);
     this.cam = { z: 1, cx: level.W / 2, cy: level.H / 2 };
-    this.flow = Array.from({ length: 170 }, () => this.spawn());
+    // 90, not the prototype's 170: on a real device each particle costs a Path build + 2 draw
+    // calls every frame (~180 draws total), and the ambient current effect reads the same with
+    // fewer of them since they're diffuse and short-lived already.
+    this.flow = Array.from({ length: 90 }, () => this.spawn());
     this.lastTs = null;
-    this.shadeImage = null;
+    this.backgroundImage = null;
+    this.buildPullGrid();
   }
 
   layout(widthDp: number, heightDp: number, dpr: number) {
@@ -192,7 +205,32 @@ export class GreenGame {
     this.heightDp = heightDp;
     this.scale = widthDp / this.L.W;
     this.dpr = dpr;
-    this.shadeImage = buildShadeImage(this.L, Math.round(widthDp * dpr), Math.round(heightDp * dpr), this.scale, dpr);
+    this.buildBackgroundImage(Math.round(widthDp * dpr), Math.round(heightDp * dpr), dpr);
+  }
+
+  private buildPullGrid() {
+    const L = this.L;
+    const cell = GreenGame.PULL_CELL;
+    const gw = Math.floor(L.W / cell) + 2;
+    const gh = Math.floor(L.H / cell) + 2;
+    const grid = new Float32Array(gw * gh * 3);
+    const thr = 18 / L.stimp / G;
+    for (let j = 0; j < gh; j++) {
+      for (let i = 0; i < gw; i++) {
+        const [gx, gy] = grad(L, i * cell, j * cell);
+        const m = Math.hypot(gx, gy);
+        const n = Math.max(0, m - thr);
+        const idx = (j * gw + i) * 3;
+        if (n > 0) {
+          grid[idx] = (-gx / m) * n;
+          grid[idx + 1] = (-gy / m) * n;
+          grid[idx + 2] = n;
+        }
+      }
+    }
+    this.pullGrid = grid;
+    this.pullGridW = gw;
+    this.pullGridH = gh;
   }
 
   private inZone(x: number, y: number): boolean {
@@ -279,11 +317,17 @@ export class GreenGame {
     return { x, y, life: 2 + Math.random() * 4, age: Math.random() * 3, tx: [] };
   }
 
+  // Looks up the cached pull grid built in buildPullGrid(). Only used for the visual flow
+  // field (particles, arrows, resting dots) — actual ball physics always uses the exact
+  // grad() in engine/physics.ts, untouched by this cache.
   private netPull(x: number, y: number): [number, number, number] {
-    const [gx, gy] = grad(this.L, x, y),
-      m = Math.hypot(gx, gy),
-      n = Math.max(0, m - this.thr());
-    return n > 0 ? [(-gx / m) * n, (-gy / m) * n, n] : [0, 0, 0];
+    if (!this.pullGrid) return [0, 0, 0];
+    const cell = GreenGame.PULL_CELL;
+    const i = Math.max(0, Math.min(this.pullGridW - 1, Math.round(x / cell)));
+    const j = Math.max(0, Math.min(this.pullGridH - 1, Math.round(y / cell)));
+    const idx = (j * this.pullGridW + i) * 3;
+    const g = this.pullGrid;
+    return [g[idx], g[idx + 1], g[idx + 2]];
   }
 
   private updateFlow(dt: number) {
@@ -399,30 +443,17 @@ export class GreenGame {
     canvas.scale(this.cam.z, this.cam.z);
     canvas.translate(-this.px(this.cam.cx), -this.px(this.cam.cy));
 
-    if (this.shadeImage) {
+    // Terrain shading, outline/fringe, static trees/bunkers/crowd, and resting-spot dots are
+    // all baked into one image in buildBackgroundImage() — none of it changes frame to frame,
+    // so a normal frame just blits it once instead of issuing ~400 vector draw calls.
+    if (this.backgroundImage) {
       canvas.drawImageRect(
-        this.shadeImage,
-        Skia.XYWHRect(0, 0, this.shadeImage.width(), this.shadeImage.height()),
+        this.backgroundImage,
+        Skia.XYWHRect(0, 0, this.backgroundImage.width(), this.backgroundImage.height()),
         Skia.XYWHRect(0, 0, w, h),
         this.fill("white"),
       );
     }
-
-    this.drawScene(canvas, performance.now() / 1000);
-
-    const outlinePts = outline(L).map(([x, y]) => Skia.Point(this.px(x), this.px(y)));
-    const outlinePath = Skia.Path.Make();
-    outlinePath.addPoly(outlinePts, true);
-
-    canvas.save();
-    canvas.clipPath(outlinePath, ClipOp.Intersect, true);
-    const stripe = this.fill("rgba(255,255,255,0.035)");
-    for (let y = 0; y < L.H; y += 4) canvas.drawRect(Skia.XYWHRect(0, this.px(y), w, this.px(2)), stripe);
-    canvas.restore();
-
-    const glowStroke = withGlow(this.stroke("rgba(255,255,255,0.22)", 2), "rgba(0,0,0,0.5)", 7);
-    canvas.drawPath(outlinePath, glowStroke);
-    canvas.drawPath(outlinePath, this.stroke("rgba(120,180,110,0.25)", this.px(1.4)));
 
     // flowing current
     for (const p of this.flow) {
@@ -454,14 +485,6 @@ export class GreenGame {
       canvas.drawPath(head, this.fill(`rgba(242,235,221,${a})`));
     }
 
-    // resting spots
-    const rest = this.fill("rgba(242,235,221,0.3)");
-    for (let y = L.edge + 1.5; y < L.H - L.edge; y += 3)
-      for (let x = L.edge + 1.5; x < L.W - L.edge; x += 3) {
-        if (!inside(L, x, y) || this.netPull(x, y)[2] > 0) continue;
-        canvas.drawCircle(this.px(x), this.px(y), 1.4, rest);
-      }
-
     // drop zone
     const z = L.zone;
     const zoneRRect = Skia.RRectXY(Skia.XYWHRect(this.px(z.x), this.px(z.y), this.px(z.w), this.px(z.h)), this.px(2.5), this.px(2.5));
@@ -475,14 +498,14 @@ export class GreenGame {
     for (const t of this.trails) {
       const path = Skia.Path.Make();
       t.forEach(([x, y], k) => (k ? path.lineTo(this.px(x), this.px(y)) : path.moveTo(this.px(x), this.px(y))));
-      canvas.drawPath(path, withGlow(this.stroke("rgba(255,209,102,0.95)", 2, StrokeCap.Round), "rgba(255,209,102,0.9)", 5));
+      this.drawGlowPath(canvas, path, "rgba(255,209,102,0.9)", 5, "rgba(255,209,102,0.95)", 2, StrokeCap.Round);
     }
 
     // cup + flag
     const hx = this.px(L.hole.x),
       hy = this.px(L.hole.y),
       cr = this.px(CUP_R);
-    canvas.drawCircle(hx, hy, cr + 1.5, withGlow(this.fill("rgba(242,235,221,0.95)"), "rgba(242,235,221,0.6)", 5));
+    this.drawGlowCircle(canvas, hx, hy, cr + 1.5, "rgba(242,235,221,0.6)", 5, "rgba(242,235,221,0.95)");
     canvas.drawCircle(hx, hy, cr, this.fill("#07100A"));
     const wob = this.flagShake > 0 ? Math.sin(this.flagShake * 40) * this.flagShake * 0.35 : 0;
     canvas.save();
@@ -531,7 +554,7 @@ export class GreenGame {
         by = this.px(this.ball.y),
         r = this.px(0.22) * this.ball.size;
       canvas.drawOval(Skia.XYWHRect(bx + r * 0.35 - r * 0.95, by + r * 0.45 - r * 0.6, r * 1.9, r * 1.2), this.fill("rgba(0,0,0,0.35)"));
-      canvas.drawCircle(bx, by, r, withGlow(this.fill("#FBFAF5"), "rgba(251,250,245,0.8)", 4));
+      this.drawGlowCircle(canvas, bx, by, r, "rgba(251,250,245,0.8)", 4, "#FBFAF5");
     }
 
     for (const p of this.particles) {
@@ -562,6 +585,84 @@ export class GreenGame {
     }
 
     canvas.restore(); // camera
+  }
+
+  // Correct glow: a blurred halo pass drawn first, then the real shape drawn solid on top —
+  // NOT a single blur-masked paint (that just dissolves the shape's own fill/stroke, which is
+  // invisible for anything small relative to the blur radius, e.g. the ball).
+  private drawGlowCircle(canvas: SkCanvas, cx: number, cy: number, r: number, glowColor: string, blur: number, solidColor: string) {
+    const halo = this.fill(glowColor);
+    halo.setMaskFilter(Skia.MaskFilter.MakeBlur(BlurStyle.Normal, blur, true));
+    canvas.drawCircle(cx, cy, r, halo);
+    canvas.drawCircle(cx, cy, r, this.fill(solidColor));
+  }
+
+  private drawGlowPath(
+    canvas: SkCanvas,
+    path: SkPath,
+    glowColor: string,
+    blur: number,
+    solidColor: string,
+    width: number,
+    cap: StrokeCap = StrokeCap.Butt,
+  ) {
+    const halo = this.stroke(glowColor, width, cap);
+    halo.setMaskFilter(Skia.MaskFilter.MakeBlur(BlurStyle.Normal, blur, true));
+    canvas.drawPath(path, halo);
+    canvas.drawPath(path, this.stroke(solidColor, width, cap));
+  }
+
+  // Builds the cached per-level background: terrain shading (from buildShadeImage) with the
+  // outline/fringe, static trees/bunkers/crowd (no sway/hop — those are the only animated
+  // parts of the scene, and they're a rounding error next to the draw-call savings), and
+  // resting-spot dots composited on top at full device resolution.
+  private buildBackgroundImage(canvasW: number, canvasH: number, dpr: number) {
+    const terrain = buildShadeImage(this.L, canvasW, canvasH, this.scale, dpr);
+    const surface = Skia.Surface.MakeOffscreen(canvasW, canvasH);
+    if (!surface) {
+      this.backgroundImage = terrain;
+      return;
+    }
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color("rgba(0,0,0,0)"));
+    if (terrain) {
+      canvas.drawImageRect(
+        terrain,
+        Skia.XYWHRect(0, 0, terrain.width(), terrain.height()),
+        Skia.XYWHRect(0, 0, canvasW, canvasH),
+        this.fill("white"),
+      );
+    }
+    canvas.save();
+    canvas.scale(dpr, dpr); // draw the rest in dp coordinates, same as a live frame would
+    this.drawStaticLayer(canvas);
+    canvas.restore();
+    this.backgroundImage = surface.makeImageSnapshot();
+  }
+
+  private drawStaticLayer(canvas: SkCanvas) {
+    const L = this.L;
+    this.drawScene(canvas, 0);
+
+    const outlinePts = outline(L).map(([x, y]) => Skia.Point(this.px(x), this.px(y)));
+    const outlinePath = Skia.Path.Make();
+    outlinePath.addPoly(outlinePts, true);
+
+    canvas.save();
+    canvas.clipPath(outlinePath, ClipOp.Intersect, true);
+    const stripe = this.fill("rgba(255,255,255,0.035)");
+    for (let y = 0; y < L.H; y += 4) canvas.drawRect(Skia.XYWHRect(0, this.px(y), this.widthDp, this.px(2)), stripe);
+    canvas.restore();
+
+    this.drawGlowPath(canvas, outlinePath, "rgba(0,0,0,0.5)", 7, "rgba(255,255,255,0.22)", 2);
+    canvas.drawPath(outlinePath, this.stroke("rgba(120,180,110,0.25)", this.px(1.4)));
+
+    const rest = this.fill("rgba(242,235,221,0.3)");
+    for (let y = L.edge + 1.5; y < L.H - L.edge; y += 3)
+      for (let x = L.edge + 1.5; x < L.W - L.edge; x += 3) {
+        if (!inside(L, x, y) || this.netPull(x, y)[2] > 0) continue;
+        canvas.drawCircle(this.px(x), this.px(y), 1.4, rest);
+      }
   }
 
   private centerText(canvas: SkCanvas, text: string, cx: number, y: number, paint: SkPaint, font: SkFont) {
