@@ -18,6 +18,7 @@ import {
   type SkImage,
   type SkPaint,
   type SkPath,
+  type SkPicture,
 } from "@shopify/react-native-skia";
 import { CUP_R, G, grad, inside, outline, score, simulate, type Level, type SimResult } from "../engine/physics";
 import { buildScene, type Scene } from "./scene";
@@ -97,10 +98,13 @@ export class GreenGame {
   private dpr = 1;
   widthDp = 0;
   heightDp = 0;
-  // Static per-level layer (terrain shading + outline/fringe + trees/bunkers/crowd at rest +
-  // resting-spot dots) baked to one offscreen image at layout time, so a normal frame costs a
-  // single drawImageRect instead of ~400+ individual vector draw calls.
-  private backgroundImage: SkImage | null = null;
+  // Terrain shading (raster, built once) plus a cached Picture for everything else that's
+  // static per level — outline/fringe, trees/bunkers/crowd at rest, resting-spot dots — so a
+  // normal frame costs one drawImageRect + one drawPicture instead of ~400+ individual vector
+  // draw calls. Picture (not an offscreen-surface image) deliberately: it replays through the
+  // same drawPicture/PictureRecorder path the live per-frame canvas already uses successfully.
+  private shadeImage: SkImage | null = null;
+  private staticPicture: SkPicture | null = null;
   private scene: Scene = { trees: [], bunkers: [], crowd: [] };
 
   // Coarse cache of netPull() results (terrain gradient minus the resting threshold), built once
@@ -196,7 +200,8 @@ export class GreenGame {
     // fewer of them since they're diffuse and short-lived already.
     this.flow = Array.from({ length: 90 }, () => this.spawn());
     this.lastTs = null;
-    this.backgroundImage = null;
+    this.shadeImage = null;
+    this.staticPicture = null;
     this.buildPullGrid();
   }
 
@@ -205,7 +210,8 @@ export class GreenGame {
     this.heightDp = heightDp;
     this.scale = widthDp / this.L.W;
     this.dpr = dpr;
-    this.buildBackgroundImage(Math.round(widthDp * dpr), Math.round(heightDp * dpr), dpr);
+    this.shadeImage = buildShadeImage(this.L, Math.round(widthDp * dpr), Math.round(heightDp * dpr), this.scale, dpr);
+    this.buildStaticPicture();
   }
 
   private buildPullGrid() {
@@ -443,17 +449,18 @@ export class GreenGame {
     canvas.scale(this.cam.z, this.cam.z);
     canvas.translate(-this.px(this.cam.cx), -this.px(this.cam.cy));
 
-    // Terrain shading, outline/fringe, static trees/bunkers/crowd, and resting-spot dots are
-    // all baked into one image in buildBackgroundImage() — none of it changes frame to frame,
-    // so a normal frame just blits it once instead of issuing ~400 vector draw calls.
-    if (this.backgroundImage) {
+    // Hillshade raster (built once in layout()).
+    if (this.shadeImage) {
       canvas.drawImageRect(
-        this.backgroundImage,
-        Skia.XYWHRect(0, 0, this.backgroundImage.width(), this.backgroundImage.height()),
+        this.shadeImage,
+        Skia.XYWHRect(0, 0, this.shadeImage.width(), this.shadeImage.height()),
         Skia.XYWHRect(0, 0, w, h),
         this.fill("white"),
       );
     }
+    // Outline/fringe, static trees/bunkers/crowd, and resting-spot dots — none of it changes
+    // frame to frame, so it's recorded once (buildStaticPicture) and just replayed here.
+    if (this.staticPicture) canvas.drawPicture(this.staticPicture);
 
     // flowing current
     for (const p of this.flow) {
@@ -612,32 +619,15 @@ export class GreenGame {
     canvas.drawPath(path, this.stroke(solidColor, width, cap));
   }
 
-  // Builds the cached per-level background: terrain shading (from buildShadeImage) with the
-  // outline/fringe, static trees/bunkers/crowd (no sway/hop — those are the only animated
-  // parts of the scene, and they're a rounding error next to the draw-call savings), and
-  // resting-spot dots composited on top at full device resolution.
-  private buildBackgroundImage(canvasW: number, canvasH: number, dpr: number) {
-    const terrain = buildShadeImage(this.L, canvasW, canvasH, this.scale, dpr);
-    const surface = Skia.Surface.MakeOffscreen(canvasW, canvasH);
-    if (!surface) {
-      this.backgroundImage = terrain;
-      return;
-    }
-    const canvas = surface.getCanvas();
-    canvas.clear(Skia.Color("rgba(0,0,0,0)"));
-    if (terrain) {
-      canvas.drawImageRect(
-        terrain,
-        Skia.XYWHRect(0, 0, terrain.width(), terrain.height()),
-        Skia.XYWHRect(0, 0, canvasW, canvasH),
-        this.fill("white"),
-      );
-    }
-    canvas.save();
-    canvas.scale(dpr, dpr); // draw the rest in dp coordinates, same as a live frame would
+  // Records the cached per-level static layer — outline/fringe, static trees/bunkers/crowd
+  // (no sway/hop — those are the only animated parts of the scene, and they're a rounding
+  // error next to the draw-call savings), and resting-spot dots — as a Picture, in the same
+  // dp coordinate space (and via the same PictureRecorder API) the live per-frame canvas uses.
+  private buildStaticPicture() {
+    const recorder = Skia.PictureRecorder();
+    const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, this.widthDp, this.heightDp));
     this.drawStaticLayer(canvas);
-    canvas.restore();
-    this.backgroundImage = surface.makeImageSnapshot();
+    this.staticPicture = recorder.finishRecordingAsPicture();
   }
 
   private drawStaticLayer(canvas: SkCanvas) {

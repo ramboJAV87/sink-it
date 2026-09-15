@@ -35,6 +35,9 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+# stray compiled output next to source (everything under src/ is .ts/.tsx — a .js sibling
+# means an ad-hoc build script emitted in place instead of to its own outDir)
+src/**/*.js
 
 # generated native folders
 /ios
