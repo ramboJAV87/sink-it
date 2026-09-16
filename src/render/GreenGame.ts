@@ -18,7 +18,6 @@ import {
   type SkImage,
   type SkPaint,
   type SkPath,
-  type SkPicture,
 } from "@shopify/react-native-skia";
 import { CUP_R, G, grad, inside, outline, score, simulate, type Level, type SimResult } from "../engine/physics";
 import { buildScene, type Scene } from "./scene";
@@ -98,13 +97,19 @@ export class GreenGame {
   private dpr = 1;
   widthDp = 0;
   heightDp = 0;
-  // Terrain shading (raster, built once) plus a cached Picture for everything else that's
-  // static per level — outline/fringe, trees/bunkers/crowd at rest, resting-spot dots — so a
-  // normal frame costs one drawImageRect + one drawPicture instead of ~400+ individual vector
-  // draw calls. Picture (not an offscreen-surface image) deliberately: it replays through the
-  // same drawPicture/PictureRecorder path the live per-frame canvas already uses successfully.
-  private shadeImage: SkImage | null = null;
-  private staticPicture: SkPicture | null = null;
+  // Terrain shading + outline/fringe + static trees/bunkers/crowd + resting-spot dots, all
+  // baked to one *raster* (CPU-backed) image once per layout — a real drawImageRect per
+  // frame, not a replayed command list. Earlier this used Skia.Surface.MakeOffscreen(), which
+  // is GPU-backed and produced a blank/black result on Android: react-native-skia's Android
+  // backend keeps a thread-local GL context per OS thread (see OpenGLContext::getInstance() in
+  // the package's android/cpp sources), and the docs' own offscreen-texture example wraps the
+  // whole draw in runOnUI(...) "for optimal performance" — texture work done on the wrong
+  // thread, or a missing flush() before the snapshot (also required per those docs, and also
+  // missing here originally), plausibly explains why the image came back unusable. Switching
+  // to Skia.Surface.Make() (CPU raster, per SurfaceFactory.d.ts) sidesteps that whole subsystem
+  // — no GrContext, no GL, no thread affinity — which is worth the risk-reduction even without
+  // a device to confirm the exact GPU-side mechanism.
+  private backgroundImage: SkImage | null = null;
   private scene: Scene = { trees: [], bunkers: [], crowd: [] };
 
   // Coarse cache of netPull() results (terrain gradient minus the resting threshold), built once
@@ -200,8 +205,7 @@ export class GreenGame {
     // fewer of them since they're diffuse and short-lived already.
     this.flow = Array.from({ length: 90 }, () => this.spawn());
     this.lastTs = null;
-    this.shadeImage = null;
-    this.staticPicture = null;
+    this.backgroundImage = null;
     this.buildPullGrid();
   }
 
@@ -210,8 +214,7 @@ export class GreenGame {
     this.heightDp = heightDp;
     this.scale = widthDp / this.L.W;
     this.dpr = dpr;
-    this.shadeImage = buildShadeImage(this.L, Math.round(widthDp * dpr), Math.round(heightDp * dpr), this.scale, dpr);
-    this.buildStaticPicture();
+    this.buildBackgroundImage(Math.round(widthDp * dpr), Math.round(heightDp * dpr), dpr);
   }
 
   private buildPullGrid() {
@@ -449,18 +452,16 @@ export class GreenGame {
     canvas.scale(this.cam.z, this.cam.z);
     canvas.translate(-this.px(this.cam.cx), -this.px(this.cam.cy));
 
-    // Hillshade raster (built once in layout()).
-    if (this.shadeImage) {
+    // Terrain shading + outline/fringe + static scene + resting dots — one real raster image,
+    // built once in layout() (see buildBackgroundImage). A normal frame just blits it.
+    if (this.backgroundImage) {
       canvas.drawImageRect(
-        this.shadeImage,
-        Skia.XYWHRect(0, 0, this.shadeImage.width(), this.shadeImage.height()),
+        this.backgroundImage,
+        Skia.XYWHRect(0, 0, this.backgroundImage.width(), this.backgroundImage.height()),
         Skia.XYWHRect(0, 0, w, h),
         this.fill("white"),
       );
     }
-    // Outline/fringe, static trees/bunkers/crowd, and resting-spot dots — none of it changes
-    // frame to frame, so it's recorded once (buildStaticPicture) and just replayed here.
-    if (this.staticPicture) canvas.drawPicture(this.staticPicture);
 
     // flowing current
     for (const p of this.flow) {
@@ -619,15 +620,35 @@ export class GreenGame {
     canvas.drawPath(path, this.stroke(solidColor, width, cap));
   }
 
-  // Records the cached per-level static layer — outline/fringe, static trees/bunkers/crowd
-  // (no sway/hop — those are the only animated parts of the scene, and they're a rounding
-  // error next to the draw-call savings), and resting-spot dots — as a Picture, in the same
-  // dp coordinate space (and via the same PictureRecorder API) the live per-frame canvas uses.
-  private buildStaticPicture() {
-    const recorder = Skia.PictureRecorder();
-    const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, this.widthDp, this.heightDp));
+  // Builds the cached per-level background: terrain shading (buildShadeImage) with the
+  // outline/fringe, static trees/bunkers/crowd (no sway/hop — those are the only animated
+  // parts of the scene, and they're a rounding error next to what baking this saves), and
+  // resting-spot dots, composited onto one CPU-raster image at full device resolution.
+  // Surface.Make() (CPU/raster), not Surface.MakeOffscreen() (GPU) — see the field comment
+  // above for why: MakeOffscreen produced a blank image on Android specifically.
+  private buildBackgroundImage(canvasW: number, canvasH: number, dpr: number) {
+    const terrain = buildShadeImage(this.L, canvasW, canvasH, this.scale, dpr);
+    const surface = Skia.Surface.Make(canvasW, canvasH);
+    if (!surface) {
+      this.backgroundImage = terrain;
+      return;
+    }
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color("rgba(0,0,0,0)"));
+    if (terrain) {
+      canvas.drawImageRect(
+        terrain,
+        Skia.XYWHRect(0, 0, terrain.width(), terrain.height()),
+        Skia.XYWHRect(0, 0, canvasW, canvasH),
+        this.fill("white"),
+      );
+    }
+    canvas.save();
+    canvas.scale(dpr, dpr); // draw the rest in dp coordinates, same as a live frame would
     this.drawStaticLayer(canvas);
-    this.staticPicture = recorder.finishRecordingAsPicture();
+    canvas.restore();
+    surface.flush(); // required before makeImageSnapshot() per Skia's own docs — was missing
+    this.backgroundImage = surface.makeImageSnapshot();
   }
 
   private drawStaticLayer(canvas: SkCanvas) {
