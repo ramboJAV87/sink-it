@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../navigation/types";
 import type { Level, SimResult } from "../engine/physics";
 import { GreenCanvas } from "../render/GreenCanvas";
@@ -20,6 +21,7 @@ interface Outcome {
 export default function PlayScreen({ route, navigation }: Props) {
   const { mode } = route.params;
   const reduceMotion = useReduceMotion();
+  const insets = useSafeAreaInsets();
 
   const [level, setLevel] = useState<Level | null>(null);
   const [dailyMeta, setDailyMeta] = useState<{ dailyN: number; day: string } | null>(null);
@@ -191,7 +193,7 @@ export default function PlayScreen({ route, navigation }: Props) {
 
   if (!level) {
     return (
-      <View style={styles.loading}>
+      <View style={[styles.loading, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         <Text style={styles.loadingText}>Reading the green…</Text>
       </View>
     );
@@ -203,7 +205,10 @@ export default function PlayScreen({ route, navigation }: Props) {
   const locked = mode === "daily" && lockedTotal !== null;
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 24 }]}
+    >
       <Pressable onPress={() => navigation.navigate("Home")}>
         <Text style={styles.back}>← Home</Text>
       </Pressable>

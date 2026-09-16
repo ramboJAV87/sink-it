@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../navigation/types";
 import { colors } from "../theme/colors";
 import { dailyNumber, dayKey } from "../game/session";
@@ -10,6 +11,7 @@ import { getCampaignLevel, getDailyResult, getStreak } from "../db/db";
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 export default function HomeScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
   const [dailyN, setDailyN] = useState(0);
   const [streak, setStreak] = useState(0);
   const [dailyDone, setDailyDone] = useState(false);
@@ -36,7 +38,7 @@ export default function HomeScreen({ navigation }: Props) {
   );
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 14 }]}>
       <View style={styles.hero}>
         <Text style={styles.wordmark}>
           Sink<Text style={{ color: colors.cyan }}>It</Text>

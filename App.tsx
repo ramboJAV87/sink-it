@@ -5,6 +5,7 @@ import { useFonts } from "expo-font";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { NavigationContainer, DarkTheme } from "@react-navigation/native";
 import { View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { RootNavigator } from "./src/navigation/RootNavigator";
 import { poppinsFontMap } from "./src/theme/fonts";
 import { colors } from "./src/theme/colors";
@@ -32,12 +33,14 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={{ flex: 1, backgroundColor: colors.ink }} onLayout={onLayoutRootView}>
-        <NavigationContainer theme={navTheme}>
-          <RootNavigator />
-        </NavigationContainer>
-        <StatusBar style="light" />
-      </View>
+      <SafeAreaProvider>
+        <View style={{ flex: 1, backgroundColor: colors.ink }} onLayout={onLayoutRootView}>
+          <NavigationContainer theme={navTheme}>
+            <RootNavigator />
+          </NavigationContainer>
+          <StatusBar style="light" />
+        </View>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

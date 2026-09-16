@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Slider from "@react-native-community/slider";
 import * as Clipboard from "expo-clipboard";
 import type { RootStackParamList } from "../navigation/types";
@@ -23,6 +24,7 @@ const TOOLS: { key: EditTool; label: string }[] = [
 
 export default function CreateScreen({ route, navigation }: Props) {
   const reduceMotion = useReduceMotion();
+  const insets = useSafeAreaInsets();
   const [ed, setEd] = useState<EditorState>(() => (route.params?.loadCode ? decodeCode(route.params.loadCode) : newEditorState()));
   const [tool, setTool] = useState<EditTool>("mound");
   const [verdict, setVerdict] = useState("—");
@@ -120,7 +122,10 @@ export default function CreateScreen({ route, navigation }: Props) {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 24 }]}
+    >
       <Pressable onPress={() => navigation.navigate("Home")}>
         <Text style={styles.back}>← Home</Text>
       </Pressable>
