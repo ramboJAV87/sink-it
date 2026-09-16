@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { LayoutChangeEvent, PixelRatio, StyleSheet, View } from "react-native";
 import { Canvas, Picture, Skia, useFont, type SkPicture } from "@shopify/react-native-skia";
+import { useSharedValue } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import type { Level } from "../engine/physics";
 import { GreenGame, type EditMarker, type GameMode, type GreenGameCallbacks } from "./GreenGame";
@@ -71,23 +72,34 @@ export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, 
     gameRef.current!.layout(width, height, PixelRatio.get());
   };
 
-  const [picture, setPicture] = useState<SkPicture | null>(null);
+  // The frame is handed to Skia through a Reanimated shared value, NOT React state. Setting
+  // state here would force a full React re-render 60x/second; a shared value updates the
+  // Skia node directly (its props accept `{value: T}`) and skips reconciliation entirely.
+  const emptyPicture = useMemo(() => {
+    const recorder = Skia.PictureRecorder();
+    recorder.beginRecording(Skia.XYWHRect(0, 0, 1, 1));
+    return recorder.finishRecordingAsPicture();
+  }, []);
+  const picture = useSharedValue<SkPicture>(emptyPicture);
 
   useEffect(() => {
     let raf = 0;
+    // One recorder, reused across frames — beginRecording() resets it, so there's no reason
+    // to allocate a new host object every frame.
+    const recorder = Skia.PictureRecorder();
     const tick = (ts: number) => {
       const game = gameRef.current!;
       if (sizeRef.current.width > 0) {
         game.step(ts);
-        const recorder = Skia.PictureRecorder();
         const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, sizeRef.current.width, sizeRef.current.height));
         game.draw(canvas, fontRef.current);
-        setPicture(recorder.finishRecordingAsPicture());
+        picture.value = recorder.finishRecordingAsPicture();
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onEditTapRef = useRef(onEditTap);
@@ -124,7 +136,9 @@ export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, 
     <GestureDetector gesture={gesture}>
       <View style={styles.stage} onLayout={onLayout}>
         {size.width > 0 && (
-          <Canvas style={{ width: size.width, height: size.height }}>{picture ? <Picture picture={picture} /> : null}</Canvas>
+          <Canvas style={{ width: size.width, height: size.height }}>
+            <Picture picture={picture} />
+          </Canvas>
         )}
       </View>
     </GestureDetector>

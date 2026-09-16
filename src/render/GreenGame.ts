@@ -90,6 +90,7 @@ export interface GreenGameCallbacks {
 }
 
 const CONFETTI_COLORS = ["#FFD166", "#FF5A5F", "#B8F53D", "#4CE0D2", "#FF7EB6"];
+const FLOW_COLOR = "rgb(242,235,221)";
 
 export class GreenGame {
   L!: Level;
@@ -124,6 +125,8 @@ export class GreenGame {
   balls = 0;
   best = 0;
   private trails: [number, number][][] = [];
+  // dp-space Paths for `trails`, rebuilt only when a trail is added or the scale changes
+  private trailPaths: SkPath[] = [];
   private ball: BallVisual | null = null;
   private particles: Particle[] = [];
   private flagShake = 0;
@@ -143,6 +146,9 @@ export class GreenGame {
   // reusable paints — mutate + draw, mirrors setting ctx.fillStyle/strokeStyle in the prototype
   private pFill: SkPaint = Skia.Paint();
   private pStroke: SkPaint = Skia.Paint();
+  // reusable geometry for the per-frame hot loops (rewind() keeps the allocated storage)
+  private flowPath: SkPath = Skia.Path.Make();
+  private flowHead: SkPath = Skia.Path.Make();
 
   constructor(callbacks: GreenGameCallbacks = {}, reduceMotion = false) {
     this.callbacks = callbacks;
@@ -189,6 +195,7 @@ export class GreenGame {
     this.balls = ballsCount;
     this.best = 0;
     this.trails = [];
+    this.trailPaths = [];
     this.ball = null;
     this.particles = [];
     this.flagShake = 0;
@@ -215,6 +222,14 @@ export class GreenGame {
     this.scale = widthDp / this.L.W;
     this.dpr = dpr;
     this.buildBackgroundImage(Math.round(widthDp * dpr), Math.round(heightDp * dpr), dpr);
+    // cached trail geometry is in dp, so a new scale invalidates it
+    this.trailPaths = this.trails.map((t) => this.buildTrailPath(t));
+  }
+
+  private buildTrailPath(points: [number, number][]): SkPath {
+    const path = Skia.Path.Make();
+    points.forEach(([x, y], k) => (k ? path.lineTo(this.px(x), this.px(y)) : path.moveTo(this.px(x), this.px(y))));
+    return path;
   }
 
   private buildPullGrid() {
@@ -391,6 +406,7 @@ export class GreenGame {
         this.ball!.size = r.lipped && d2 < CUP_R * 1.6 ? 1.35 : 1;
         if (this.roll.k >= path.length - 1) {
           this.trails.push(path);
+          this.trailPaths.push(this.buildTrailPath(path));
           const pts = score(r);
           this.best = Math.max(this.best, pts);
           if (r.holed) {
@@ -463,7 +479,16 @@ export class GreenGame {
       );
     }
 
-    // flowing current
+    // Flowing current. Hot loop — ~90 particles every frame — so it avoids per-particle
+    // allocations: two Paths are rewound and refilled rather than re-created, the arrowhead
+    // is built with moveTo/lineTo (no SkPoint objects), and the paints are configured once
+    // outside the loop so only alpha/width change per particle. Building an
+    // `rgba(...)` string and re-parsing it through Skia.Color() 180x/frame was pure waste
+    // when every one of them is the same cream with a different alpha.
+    const flowStroke = this.stroke(FLOW_COLOR, 1, StrokeCap.Round);
+    const flowFill = this.fill(FLOW_COLOR);
+    const flowPath = this.flowPath;
+    const flowHead = this.flowHead;
     for (const p of this.flow) {
       if (p.tx.length < 3) continue;
       const [ux, uy, n] = this.netPull(p.x, p.y);
@@ -471,26 +496,25 @@ export class GreenGame {
       const fade = Math.min(1, p.age * 1.2, (p.life - p.age) * 1.2),
         a = (0.22 + Math.min(0.5, n * 8)) * fade,
         lw = 1 + Math.min(1.4, n * 16);
-      const path = Skia.Path.Make();
-      path.moveTo(this.px(p.tx[0][0]), this.px(p.tx[0][1]));
-      for (let k = 1; k < p.tx.length; k++) path.lineTo(this.px(p.tx[k][0]), this.px(p.tx[k][1]));
-      path.lineTo(this.px(p.x), this.px(p.y));
-      canvas.drawPath(path, this.stroke(`rgba(242,235,221,${a})`, lw, StrokeCap.Round));
+      flowPath.rewind();
+      flowPath.moveTo(this.px(p.tx[0][0]), this.px(p.tx[0][1]));
+      for (let k = 1; k < p.tx.length; k++) flowPath.lineTo(this.px(p.tx[k][0]), this.px(p.tx[k][1]));
+      flowPath.lineTo(this.px(p.x), this.px(p.y));
+      flowStroke.setStrokeWidth(lw);
+      flowStroke.setAlphaf(a);
+      canvas.drawPath(flowPath, flowStroke);
       const dx = ux / n,
         dy = uy / n,
         hx2 = this.px(p.x),
         hy2 = this.px(p.y),
         hw = 2.2 + lw * 0.6;
-      const head = Skia.Path.Make();
-      head.addPoly(
-        [
-          Skia.Point(hx2 + dx * hw * 1.6, hy2 + dy * hw * 1.6),
-          Skia.Point(hx2 - dy * hw, hy2 + dx * hw),
-          Skia.Point(hx2 + dy * hw, hy2 - dx * hw),
-        ],
-        true,
-      );
-      canvas.drawPath(head, this.fill(`rgba(242,235,221,${a})`));
+      flowHead.rewind();
+      flowHead.moveTo(hx2 + dx * hw * 1.6, hy2 + dy * hw * 1.6);
+      flowHead.lineTo(hx2 - dy * hw, hy2 + dx * hw);
+      flowHead.lineTo(hx2 + dy * hw, hy2 - dx * hw);
+      flowHead.close();
+      flowFill.setAlphaf(a);
+      canvas.drawPath(flowHead, flowFill);
     }
 
     // drop zone
@@ -502,10 +526,10 @@ export class GreenGame {
       this.centerText(canvas, "DROP ZONE", this.px(z.x + z.w / 2), this.px(z.y) - 6, this.fill("#B8F53D"), font);
     }
 
-    // trails
-    for (const t of this.trails) {
-      const path = Skia.Path.Make();
-      t.forEach(([x, y], k) => (k ? path.lineTo(this.px(x), this.px(y)) : path.moveTo(this.px(x), this.px(y))));
+    // Trails. A finished roll is hundreds of points and never changes again, so the Path is
+    // built once when the trail is recorded (see trailPaths) rather than re-walking every
+    // point of every trail on every frame.
+    for (const path of this.trailPaths) {
       this.drawGlowPath(canvas, path, "rgba(255,209,102,0.9)", 5, "rgba(255,209,102,0.95)", 2, StrokeCap.Round);
     }
 
