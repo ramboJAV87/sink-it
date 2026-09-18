@@ -9,6 +9,8 @@ import type { BallOutcome } from "../render/GreenGame";
 import { useReduceMotion } from "../hooks/useReduceMotion";
 import { colors } from "../theme/colors";
 import { BALLS, starsFor, targets } from "../game/session";
+import { MEDALS, medalFor, roundEnds, type Medal } from "../game/round";
+import { RoundOverlay } from "./RoundOverlay";
 import { campaignGreen, dailyGreen, prefetchCampaign } from "../game/greenCache";
 import { getCampaignLevel, getDailyResult, recordGreenResult, saveDailyResult, setCampaignLevel } from "../db/db";
 
@@ -17,6 +19,17 @@ type Props = NativeStackScreenProps<RootStackParamList, "Play">;
 interface Outcome {
   result: SimResult;
   points: number;
+}
+
+interface RoundResult {
+  medal: Medal | null;
+  missed?: boolean;
+  headline: string;
+  detail: string;
+}
+
+function fmtDist(dist: number): string {
+  return dist < 1 ? `${Math.round(dist * 12)} in` : `${dist.toFixed(1)} ft`;
 }
 
 export default function PlayScreen({ route, navigation }: Props) {
@@ -33,9 +46,7 @@ export default function PlayScreen({ route, navigation }: Props) {
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
   const [message, setMessage] = useState("");
   const [resultLine, setResultLine] = useState<string | null>(null);
-  const [showNext, setShowNext] = useState(false);
-  const [showRetry, setShowRetry] = useState(false);
-  const [showShare, setShowShare] = useState(false);
+  const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,9 +76,7 @@ export default function PlayScreen({ route, navigation }: Props) {
       }
       setBest(0);
       setOutcomes([]);
-      setShowNext(false);
-      setShowRetry(false);
-      setShowShare(false);
+      setRoundResult(null);
       setResultLine(null);
     }
     load();
@@ -103,28 +112,27 @@ export default function PlayScreen({ route, navigation }: Props) {
 
   async function handleOutcome(o: BallOutcome, holed: boolean) {
     if (!level) return;
+    const attempt = outcomes.length + 1; // 1-based: the ball that produced this result
     const nextOutcomes = [...outcomes, { result: o.result, points: o.points }];
     setOutcomes(nextOutcomes);
     setBest(o.best);
 
     const dist = o.result.dist;
-    const feet = dist < 1 ? `${Math.round(dist * 12)} in` : `${dist.toFixed(1)} ft`;
-    const line = holed ? "In the cup · 100 pts" : `${feet} away · ${o.points} pts`;
-    setResultLine(line);
+    const feet = fmtDist(dist);
+    setResultLine(holed ? "In the cup · 100 pts" : `${feet} away · ${o.points} pts`);
 
-    const n = starsFor(o.best, t1, t2);
-    const starWord = ["no stars yet", "one star", "two stars", "three stars"][n];
-    const nextGoal = n === 0 ? `${t1} for a star` : n === 1 ? `${t2} for two` : n === 2 ? "hole it for three" : "";
     const total = nextOutcomes.reduce((a, q) => a + q.points, 0);
-    const done = mode === "daily" ? o.ballsLeft === 0 : o.ballsLeft === 0 || holed;
+    const ended = roundEnds({ mode, holed, ballsLeft: o.ballsLeft });
 
+    // Daily is untouched by the campaign rework: every ball counts toward a total out of 300,
+    // and a hole-out does NOT end it early.
     if (mode === "daily" && dailyMeta) {
-      if (done) {
+      if (ended) {
         setMessage(`${total} out of 300 today. New green tomorrow.`);
-        setShowShare(true);
         const drops = nextOutcomes.map((q) => [q.result.x, q.result.y] as [number, number]);
         const scores = nextOutcomes.map((q) => q.points);
         await saveDailyResult(dailyMeta.day, total, drops, scores);
+        setRoundResult({ medal: null, headline: `Daily #${dailyMeta.dailyN}`, detail: `${total} / 300` });
       } else {
         setMessage(
           `${o.result.lipped ? "Too much pace. " : ""}${total} so far. ${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left — every ball counts today.`,
@@ -134,25 +142,30 @@ export default function PlayScreen({ route, navigation }: Props) {
     }
 
     if (mode === "play") {
-      await recordGreenResult(route.params.mode === "play" ? route.params.levelNo : 0, n, o.best);
+      await recordGreenResult(route.params.mode === "play" ? route.params.levelNo : 0, starsFor(o.best, t1, t2), o.best);
     }
 
-    if (n > 0) {
-      setMessage(`Passed with ${starWord}.${o.ballsLeft > 0 && n < 3 ? ` Keep rolling — ${nextGoal}.` : ""}`);
-      if (mode !== "custom") setShowNext(true);
-      else setShowRetry(true);
-      setShowShare(true);
-      // The green is passed and they're reading the result — genuinely idle time, and the
-      // most likely next tap is "Next green". Warm it now so that tap is instant.
-      if (route.params.mode === "play") prefetchCampaign(route.params.levelNo + 1);
-    } else if (o.ballsLeft > 0) {
+    if (!ended) {
+      const need = `${t1} to pass, hole it for a medal`;
       setMessage(
-        o.result.lipped ? `Too much pace — it ran over the cup. ${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left, ${nextGoal}.` : `${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left — ${nextGoal}.`,
+        o.result.lipped
+          ? `Too much pace — it ran over the cup. ${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left, ${need}.`
+          : `${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left — ${need}.`,
       );
-    } else {
-      setMessage(`Out of balls. You needed ${t1} to pass.`);
-      setShowRetry(true);
+      return;
     }
+
+    const medal = medalFor({ holed, attempt, best: o.best, passScore: t1 });
+    const closest = Math.min(...nextOutcomes.map((q) => q.result.dist));
+    setRoundResult({
+      medal,
+      missed: !medal,
+      headline: medal ? MEDALS[medal].label : "Not this time",
+      detail: medal ? `${o.best} pts` : `Best ${fmtDist(closest)} away · needed ${t1}`,
+    });
+    setMessage(medal ? `${MEDALS[medal].label}! ${MEDALS[medal].blurb}.` : `Out of balls. You needed ${t1} to pass.`);
+    // They're reading the result — genuinely idle time, and the likely next tap is "Next green".
+    if (route.params.mode === "play" && medal) prefetchCampaign(route.params.levelNo + 1);
   }
 
   function onNext() {
@@ -168,10 +181,9 @@ export default function PlayScreen({ route, navigation }: Props) {
     setBalls(BALLS);
     setBest(0);
     setOutcomes([]);
-    setShowNext(false);
-    setShowRetry(false);
-    setShowShare(false);
+    setRoundResult(null);
     setResultLine(null);
+    setMessage("");
   }
 
   function emoji(r: SimResult): string {
@@ -203,111 +215,115 @@ export default function PlayScreen({ route, navigation }: Props) {
     );
   }
 
-  const stars = starsFor(best, t1, t2);
   const title = mode === "daily" ? `Daily #${dailyMeta?.dailyN ?? ""}` : mode === "custom" ? "Your green" : `Green ${route.params.mode === "play" ? route.params.levelNo : ""}`;
   const sub = mode === "daily" ? new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" }) : mode === "custom" ? "Custom green" : level.name;
-  const locked = mode === "daily" && lockedTotal !== null;
+  const dailyLocked = mode === "daily" && lockedTotal !== null;
+
+  const overlayActions = [];
+  if (roundResult) {
+    if (mode === "daily") {
+      overlayActions.push({ label: "Share result", onPress: onShare });
+    } else if (roundResult.medal) {
+      if (mode === "play") overlayActions.push({ label: "Next green", onPress: onNext });
+      else overlayActions.push({ label: "Play again", onPress: onRetry });
+      overlayActions.push({ label: "Share", onPress: onShare, quiet: true });
+    } else {
+      overlayActions.push({ label: "Try again", onPress: onRetry });
+    }
+  }
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 24 }]}
-    >
-      <Pressable onPress={() => navigation.navigate("Home")}>
-        <Text style={styles.back}>← Home</Text>
-      </Pressable>
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 24 }]}
+      >
+        <Pressable onPress={() => navigation.navigate("Home")}>
+          <Text style={styles.back}>← Home</Text>
+        </Pressable>
 
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.sub}>{sub}</Text>
-        </View>
-        <View style={{ alignItems: "flex-end" }}>
-          <Text style={styles.targetLabel}>{mode === "daily" ? "max today" : "to pass"}</Text>
-          <Text style={styles.targetValue}>{mode === "daily" ? 300 : t1}</Text>
-        </View>
-      </View>
-
-      <View style={styles.statusRow}>
-        <View style={styles.balls}>
-          {Array.from({ length: BALLS }, (_, i) => (
-            <View key={i} style={[styles.ball, i < BALLS - balls && styles.ballUsed]} />
-          ))}
-        </View>
-        <View style={styles.bestRow}>
-          <Text style={styles.bestLabel}>best</Text>
-          <Text style={styles.bestValue}>{best}</Text>
-          <Text style={styles.starsText}>
-            {"★".repeat(stars)}
-            <Text style={{ color: "rgba(245,241,228,0.18)" }}>{"★".repeat(3 - stars)}</Text>
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.goals}>
-        {mode === "daily" ? (
-          <View style={styles.goalPill}>
-            <Text style={styles.goalKey}>TODAY</Text>
-            <Text style={styles.goalVal}>All 3 balls count · max 300</Text>
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.sub}>{sub}</Text>
           </View>
-        ) : (
-          [
-            ["★", `${t1} pts`, stars >= 1],
-            ["★★", `${t2} pts`, stars >= 2],
-            ["★★★", "Hole it", stars >= 3],
-          ].map(([k, v, hit], i) => (
-            <View key={i} style={[styles.goalPill, hit && styles.goalHit]}>
-              <Text style={styles.goalKey}>{k as string}</Text>
-              <Text style={styles.goalVal}>{v as string}</Text>
-            </View>
-          ))
-        )}
-      </View>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text style={styles.targetLabel}>{mode === "daily" ? "max today" : "to pass"}</Text>
+            <Text style={styles.targetValue}>{mode === "daily" ? 300 : t1}</Text>
+          </View>
+        </View>
 
-      {!locked ? (
-        <GreenCanvas
-          level={level}
-          mode={mode}
-          ballsCount={balls}
-          reduceMotion={reduceMotion}
-          callbacks={{
-            onZoneMiss: handleZoneMiss,
-            onRollStart: handleRollStart,
-            onBallsChange: setBalls,
-            onBallOutcome: (o) => handleOutcome(o, false),
-            onHoled: (o) => handleOutcome(o, true),
-          }}
+        {/* How scoring works, up top where it can't be missed — this used to be a couple of
+            small chips at the very bottom of the scroll. */}
+        <View style={styles.brief}>
+          <Text style={styles.briefTitle}>
+            {mode === "daily" ? "All 3 balls count · max 300" : `Hole it for a medal · ${t1}+ to pass`}
+          </Text>
+          <Text style={styles.briefBody}>
+            {mode === "daily"
+              ? "Closer to the cup = more points (max 80 each). In the cup = 100. Every ball adds to today's total."
+              : "Closer to the cup = more points (max 80). In the cup = 100 and ends the round — ball 1 is an Ace, ball 2 a Birdie, ball 3 a Par."}
+          </Text>
+          <View style={styles.briefChips}>
+            <Text style={styles.briefChip}>Stimp {level.stimp}</Text>
+            <Text style={styles.briefChip}>Drag in the zone to aim</Text>
+          </View>
+        </View>
+
+        <View style={styles.statusRow}>
+          <View style={styles.balls}>
+            {Array.from({ length: BALLS }, (_, i) => (
+              <View key={i} style={[styles.ball, i < BALLS - balls && styles.ballUsed]} />
+            ))}
+          </View>
+          <View style={styles.bestRow}>
+            <Text style={styles.bestLabel}>best</Text>
+            <Text style={styles.bestValue}>{best}</Text>
+          </View>
+        </View>
+
+        {!dailyLocked ? (
+          <GreenCanvas
+            level={level}
+            mode={mode}
+            ballsCount={balls}
+            reduceMotion={reduceMotion}
+            locked={!!roundResult}
+            callbacks={{
+              onZoneMiss: handleZoneMiss,
+              onRollStart: handleRollStart,
+              onBallsChange: setBalls,
+              onBallOutcome: (o) => handleOutcome(o, false),
+              onHoled: (o) => handleOutcome(o, true),
+            }}
+          />
+        ) : null}
+
+        <View style={styles.msg}>
+          {resultLine && <Text style={styles.resultPill}>{resultLine}</Text>}
+          <Text style={styles.msgText}>{message}</Text>
+        </View>
+
+        {dailyLocked && (
+          <View style={styles.actions}>
+            <Pressable style={styles.btn} onPress={onShare}>
+              <Text style={styles.btnText}>Share result</Text>
+            </Pressable>
+          </View>
+        )}
+      </ScrollView>
+
+      {roundResult && (
+        <RoundOverlay
+          medal={roundResult.medal}
+          missed={roundResult.missed}
+          headline={roundResult.headline}
+          detail={roundResult.detail}
+          actions={overlayActions}
+          onHome={() => navigation.navigate("Home")}
         />
-      ) : null}
-
-      <View style={styles.msg}>
-        {resultLine && <Text style={styles.resultPill}>{resultLine}</Text>}
-        <Text style={styles.msgText}>{message}</Text>
-      </View>
-
-      <View style={styles.actions}>
-        {showNext && (
-          <Pressable style={styles.btn} onPress={onNext}>
-            <Text style={styles.btnText}>Next green</Text>
-          </Pressable>
-        )}
-        {showRetry && (
-          <Pressable style={[styles.btn, styles.btnQuiet]} onPress={onRetry}>
-            <Text style={[styles.btnText, styles.btnTextQuiet]}>Try again</Text>
-          </Pressable>
-        )}
-        {showShare && (
-          <Pressable style={styles.btn} onPress={onShare}>
-            <Text style={styles.btnText}>Share result</Text>
-          </Pressable>
-        )}
-      </View>
-
-      <View style={styles.foot}>
-        <Text style={styles.footChip}>Closer = more pts</Text>
-        <Text style={[styles.footChip, { color: colors.pink }]}>Stimp {level.stimp}</Text>
-      </View>
-    </ScrollView>
+      )}
+    </View>
   );
 }
 
@@ -329,12 +345,20 @@ const styles = StyleSheet.create({
   bestRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   bestLabel: { color: colors.textSoft, fontFamily: "Poppins_500Medium", fontSize: 13 },
   bestValue: { color: colors.gold, fontFamily: "Poppins_700Bold", fontSize: 17 },
-  starsText: { color: colors.gold, fontSize: 16, letterSpacing: 1 },
-  goals: { flexDirection: "row", gap: 6, marginBottom: 10 },
-  goalPill: { flex: 1, alignItems: "center", paddingVertical: 7, paddingHorizontal: 4, borderRadius: 12, backgroundColor: colors.paperDeep },
-  goalHit: { backgroundColor: "rgba(255,209,102,0.18)" },
-  goalKey: { color: colors.gold, fontFamily: "Poppins_700Bold", fontSize: 11, letterSpacing: 1 },
-  goalVal: { color: "rgba(255,255,255,0.85)", fontFamily: "Poppins_600SemiBold", fontSize: 12, marginTop: 2 },
+  brief: { backgroundColor: colors.paperDeep, borderRadius: 16, padding: 12, marginTop: 12 },
+  briefTitle: { color: colors.lime, fontFamily: "Poppins_700Bold", fontSize: 15 },
+  briefBody: { color: "rgba(255,255,255,0.78)", fontFamily: "Poppins_500Medium", fontSize: 13, lineHeight: 18, marginTop: 4 },
+  briefChips: { flexDirection: "row", gap: 8, marginTop: 8 },
+  briefChip: {
+    fontFamily: "Poppins_600SemiBold",
+    fontSize: 11,
+    color: colors.cyan,
+    backgroundColor: "rgba(76,224,210,0.12)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    overflow: "hidden",
+  },
   msg: { minHeight: 60, marginTop: 12 },
   resultPill: {
     alignSelf: "flex-start",
@@ -351,9 +375,5 @@ const styles = StyleSheet.create({
   msgText: { color: "rgba(255,255,255,0.85)", fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 20 },
   actions: { flexDirection: "row", gap: 10, marginTop: 8 },
   btn: { flex: 1, backgroundColor: colors.lime, borderRadius: 999, paddingVertical: 15, alignItems: "center" },
-  btnQuiet: { backgroundColor: colors.paperDeep },
   btnText: { fontFamily: "Poppins_700Bold", fontSize: 16, color: colors.ink },
-  btnTextQuiet: { color: "#fff" },
-  foot: { flexDirection: "row", justifyContent: "space-between", marginTop: 16 },
-  footChip: { fontFamily: "Poppins_700Bold", fontSize: 12, color: colors.cyan, backgroundColor: colors.paperDeep, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
 });

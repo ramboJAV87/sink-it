@@ -141,6 +141,7 @@ export class GreenGame {
   editMarkers: EditMarker[] | null = null;
 
   private reduceMotion: boolean;
+  private locked = false;
   private readonly callbacks: GreenGameCallbacks;
 
   // reusable paints — mutate + draw, mirrors setting ctx.fillStyle/strokeStyle in the prototype
@@ -189,6 +190,15 @@ export class GreenGame {
     this.reduceMotion = v;
   }
 
+  /**
+   * Blocks further drops without touching the ball count. Campaign rounds end the instant a
+   * ball holes out, so the remaining balls stay unused rather than being forced.
+   */
+  setLocked(v: boolean) {
+    this.locked = v;
+    if (v) this.aim = null;
+  }
+
   setup(level: Level, mode: GameMode, ballsCount: number) {
     this.L = level;
     this.mode = mode;
@@ -212,6 +222,7 @@ export class GreenGame {
     // fewer of them since they're diffuse and short-lived already.
     this.flow = Array.from({ length: 90 }, () => this.spawn());
     this.lastTs = null;
+    this.locked = false;
     this.backgroundImage = null;
     this.buildPullGrid();
   }
@@ -272,7 +283,7 @@ export class GreenGame {
   }
 
   onPointerDown(xDp: number, yDp: number) {
-    if (this.balls <= 0 || this.roll || this.celebrateT > 0 || !this.L) return;
+    if (this.locked || this.balls <= 0 || this.roll || this.celebrateT > 0 || !this.L) return;
     const [x, y] = this.toGreen(xDp, yDp);
     if (!this.inZone(x, y)) {
       this.zoneFlash = 1;
@@ -295,7 +306,7 @@ export class GreenGame {
   }
 
   private drop(x: number, y: number) {
-    if (this.roll || this.celebrateT > 0 || this.balls <= 0) return;
+    if (this.locked || this.roll || this.celebrateT > 0 || this.balls <= 0) return;
     const r = simulate(this.L, x, y);
     this.balls--;
     this.callbacks.onBallsChange?.(this.balls);
@@ -528,7 +539,7 @@ export class GreenGame {
     const zoneRRect = Skia.RRectXY(Skia.XYWHRect(this.px(z.x), this.px(z.y), this.px(z.w), this.px(z.h)), this.px(2.5), this.px(2.5));
     canvas.drawRRect(zoneRRect, this.fill("rgba(184,245,61,0.07)"));
     canvas.drawRRect(zoneRRect, withDash(this.stroke("rgba(184,245,61,0.9)", 2.2), this.px(0.6), this.px(0.45)));
-    if (this.balls > 0 && !this.ball && font) {
+    if (this.balls > 0 && !this.ball && !this.locked && font) {
       this.centerText(canvas, "DROP ZONE", this.px(z.x + z.w / 2), this.px(z.y) - 6, this.fill("#B8F53D"), font);
     }
 

@@ -14,11 +14,13 @@ interface Props {
   reduceMotion: boolean;
   callbacks?: GreenGameCallbacks;
   editMarkers?: EditMarker[] | null;
+  /** Round is over — no more drops, even if balls remain (campaign hole-out). */
+  locked?: boolean;
   /** Create-screen mode: taps place/remove features instead of dragging to aim. */
   onEditTap?: (xFoot: number, yFoot: number) => void;
 }
 
-export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, editMarkers, onEditTap }: Props) {
+export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, editMarkers, locked, onEditTap }: Props) {
   const font = useFont(poppinsBoldSkiaSource, 12);
   const fontRef = useRef(font);
   useEffect(() => {
@@ -51,6 +53,10 @@ export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, 
   useEffect(() => {
     gameRef.current!.editMarkers = editMarkers ?? null;
   }, [editMarkers]);
+
+  useEffect(() => {
+    gameRef.current!.setLocked(!!locked);
+  }, [locked]);
 
   const sizeRef = useRef({ width: 0, height: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
