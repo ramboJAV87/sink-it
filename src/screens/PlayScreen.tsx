@@ -8,7 +8,8 @@ import { GreenCanvas } from "../render/GreenCanvas";
 import type { BallOutcome } from "../render/GreenGame";
 import { useReduceMotion } from "../hooks/useReduceMotion";
 import { colors } from "../theme/colors";
-import { BALLS, generateCampaign, generateDaily, starsFor, targets } from "../game/session";
+import { BALLS, starsFor, targets } from "../game/session";
+import { campaignGreen, dailyGreen, prefetchCampaign } from "../game/greenCache";
 import { getCampaignLevel, getDailyResult, recordGreenResult, saveDailyResult, setCampaignLevel } from "../db/db";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Play">;
@@ -40,7 +41,7 @@ export default function PlayScreen({ route, navigation }: Props) {
     let cancelled = false;
     async function load() {
       if (route.params.mode === "daily") {
-        const { level: L, dailyN, day } = generateDaily(new Date());
+        const { level: L, dailyN, day } = await dailyGreen(new Date());
         const existing = await getDailyResult(day);
         if (cancelled) return;
         setLevel(L);
@@ -53,7 +54,7 @@ export default function PlayScreen({ route, navigation }: Props) {
           setBalls(BALLS);
         }
       } else if (route.params.mode === "play") {
-        const L = generateCampaign(route.params.levelNo);
+        const L = await campaignGreen(route.params.levelNo);
         if (cancelled) return;
         setLevel(L);
         setBalls(BALLS);
@@ -141,6 +142,9 @@ export default function PlayScreen({ route, navigation }: Props) {
       if (mode !== "custom") setShowNext(true);
       else setShowRetry(true);
       setShowShare(true);
+      // The green is passed and they're reading the result — genuinely idle time, and the
+      // most likely next tap is "Next green". Warm it now so that tap is instant.
+      if (route.params.mode === "play") prefetchCampaign(route.params.levelNo + 1);
     } else if (o.ballsLeft > 0) {
       setMessage(
         o.result.lipped ? `Too much pace — it ran over the cup. ${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left, ${nextGoal}.` : `${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left — ${nextGoal}.`,

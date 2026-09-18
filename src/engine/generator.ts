@@ -157,27 +157,77 @@ export interface GenerateResult {
   tries: number;
 }
 
-// Generate a fair green for a seed + difficulty.
-export function generate(seed: number, diff: number, P: PhysicsAPI, opts: GenerateOpts = {}): GenerateResult {
-  const inside = P.inside;
-  const r = rng(seed);
+interface GenRun {
+  r: () => number;
+  diff: number;
+  lo: number;
+  hi: number;
+  target: number;
+  step: number;
+  maxTries: number;
+  best: { err: number; L: Level; st: SolveStats; t: number } | null;
+  t: number;
+  settled: boolean;
+}
+
+// generate() and generateAsync() both drive these three, so they walk the RNG in exactly the
+// same order and return identical greens for a given seed. Don't give either one its own copy
+// of the loop — the daily green depends on this being deterministic across both paths.
+function beginGenerate(seed: number, diff: number, opts: GenerateOpts): GenRun {
   const [lo, hi] = band(diff);
-  const target = Math.round(55 + diff * 15);
-  const step = opts.step || 1.0;
-  let best: { err: number; L: Level; st: SolveStats; t: number } | null = null;
-  for (let t = 1; t <= (opts.maxTries || 60); t++) {
-    const L = candidate(r, diff, P.inside);
-    const st = solve(L, P, target, step);
-    const fair = st.holed >= 1.5 && st.lip <= (diff < 0.3 ? 0.5 : 3) && st.near >= 25 && st.off <= 55 && st.moved >= 99;
-    const inBand = st.pass >= lo && st.pass <= hi;
-    const err = (fair ? 0 : 100) + (inBand ? 0 : Math.min(Math.abs(st.pass - lo), Math.abs(st.pass - hi)));
-    if (!best || err < best.err) best = { err, L, st, t };
-    if (fair && inBand) break;
-  }
-  const L = (best as { err: number; L: Level; st: SolveStats; t: number }).L;
-  L.target = target;
+  return {
+    r: rng(seed),
+    diff,
+    lo,
+    hi,
+    target: Math.round(55 + diff * 15),
+    step: opts.step || 1.0,
+    maxTries: opts.maxTries || 60,
+    best: null,
+    t: 0,
+    settled: false,
+  };
+}
+
+// Runs one candidate attempt. Returns false once there's nothing left to do.
+function stepGenerate(run: GenRun, P: PhysicsAPI): boolean {
+  if (run.settled || run.t >= run.maxTries) return false;
+  run.t++;
+  const L = candidate(run.r, run.diff, P.inside);
+  const st = solve(L, P, run.target, run.step);
+  const fair = st.holed >= 1.5 && st.lip <= (run.diff < 0.3 ? 0.5 : 3) && st.near >= 25 && st.off <= 55 && st.moved >= 99;
+  const inBand = st.pass >= run.lo && st.pass <= run.hi;
+  const err = (fair ? 0 : 100) + (inBand ? 0 : Math.min(Math.abs(st.pass - run.lo), Math.abs(st.pass - run.hi)));
+  if (!run.best || err < run.best.err) run.best = { err, L, st, t: run.t };
+  if (fair && inBand) run.settled = true;
+  return !run.settled && run.t < run.maxTries;
+}
+
+function endGenerate(run: GenRun, seed: number, diff: number): GenerateResult {
+  const best = run.best as { err: number; L: Level; st: SolveStats; t: number };
+  const L = best.L;
+  L.target = run.target;
   L.name = NAMES[seed % NAMES.length];
   L.seed = seed;
   L.diff = diff;
-  return { level: L, stats: (best as { err: number; L: Level; st: SolveStats; t: number }).st, tries: (best as { err: number; L: Level; st: SolveStats; t: number }).t };
+  return { level: L, stats: best.st, tries: best.t };
+}
+
+// Generate a fair green for a seed + difficulty.
+export function generate(seed: number, diff: number, P: PhysicsAPI, opts: GenerateOpts = {}): GenerateResult {
+  const run = beginGenerate(seed, diff, opts);
+  // eslint-disable-next-line no-empty
+  while (stepGenerate(run, P)) {}
+  return endGenerate(run, seed, diff);
+}
+
+// Same green as generate(), but yields to the event loop between candidate attempts so a
+// 3-4s solve doesn't freeze the UI thread solid. Still runs on the JS thread — the win comes
+// from this plus prefetching ahead of time (see src/game/greenCache.ts).
+export async function generateAsync(seed: number, diff: number, P: PhysicsAPI, opts: GenerateOpts = {}): Promise<GenerateResult> {
+  const run = beginGenerate(seed, diff, opts);
+  while (stepGenerate(run, P)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return endGenerate(run, seed, diff);
 }

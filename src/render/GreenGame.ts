@@ -395,7 +395,13 @@ export class GreenGame {
         if (r.spin && !this.roll.rattled && dc < CUP_R * 0.9) {
           this.roll.rattled = true;
         }
-        this.roll.acc += slowing && !this.reduceMotion ? 0.4 : this.roll.k > 540 ? 2 : 1;
+        // Path points are 1/60 s apart, and the prototype advanced exactly one per animation
+        // frame — real time on a 60 Hz browser. Copying that frame-count rate literally meant
+        // a 120 Hz phone played the roll back at 2x speed. Scaling by dt*60 keeps the same
+        // real-time rate on any refresh rate (and is identical to the prototype at 60 Hz).
+        // This is playback only — simulate() and the path it produced are untouched.
+        const rate = slowing && !this.reduceMotion ? 0.4 : this.roll.k > 540 ? 2 : 1;
+        this.roll.acc += rate * dt * 60;
         while (this.roll.acc >= 1 && this.roll.k < path.length - 1) {
           this.roll.acc -= 1;
           this.roll.k++;

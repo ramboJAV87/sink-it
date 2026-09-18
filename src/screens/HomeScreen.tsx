@@ -6,12 +6,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../navigation/types";
 import { colors } from "../theme/colors";
 import { dailyNumber, dayKey } from "../game/session";
+import { prefetchCampaign, prefetchDaily } from "../game/greenCache";
 import { getCampaignLevel, getDailyResult, getStreak } from "../db/db";
+import { HomeBackdrop } from "../render/HomeBackdrop";
+import { useReduceMotion } from "../hooks/useReduceMotion";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 export default function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const reduceMotion = useReduceMotion();
   const [dailyN, setDailyN] = useState(0);
   const [streak, setStreak] = useState(0);
   const [dailyDone, setDailyDone] = useState(false);
@@ -29,6 +33,10 @@ export default function HomeScreen({ navigation }: Props) {
         setStreak(streakInfo.current);
         setDailyDone(!!existing);
         setCampaignLevelState(level);
+        // Start generating what they're most likely to tap while they're still looking at
+        // the menu, so Play/Daily opens instantly instead of pausing on the solver.
+        prefetchCampaign(level);
+        if (!existing) prefetchDaily(today);
       }
       load();
       return () => {
@@ -39,12 +47,18 @@ export default function HomeScreen({ navigation }: Props) {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 14 }]}>
+      <HomeBackdrop reduceMotion={reduceMotion} />
       <View style={styles.hero}>
         <Text style={styles.wordmark}>
-          Sink<Text style={{ color: colors.cyan }}>It</Text>
+          Sink<Text style={styles.wordmarkAccent}>It</Text>
         </Text>
+        <View style={styles.rule} />
         <Text style={styles.tag}>Read the green. Drop the ball. Watch it break.</Text>
-        {streak > 0 && <Text style={styles.streak}>🔥 {streak}-day streak</Text>}
+        {streak > 0 && (
+          <View style={styles.streakPill}>
+            <Text style={styles.streakText}>🔥 {streak}-day streak</Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.menu}>
@@ -78,10 +92,28 @@ export default function HomeScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.ink, padding: 14 },
-  hero: { marginTop: "16%", alignItems: "center" },
-  wordmark: { fontFamily: "Poppins_800ExtraBold", fontSize: 46, color: colors.lime, letterSpacing: -1 },
-  tag: { color: colors.textSoft, fontFamily: "Poppins_500Medium", fontSize: 15, marginTop: 8, textAlign: "center" },
-  streak: { color: colors.gold, fontFamily: "Poppins_600SemiBold", fontSize: 14, marginTop: 14 },
+  hero: { marginTop: "14%", alignItems: "center" },
+  wordmark: {
+    fontFamily: "Poppins_800ExtraBold",
+    fontSize: 72,
+    lineHeight: 76,
+    color: colors.lime,
+    letterSpacing: -3,
+    textShadowColor: "rgba(184,245,61,0.35)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 24,
+  },
+  wordmarkAccent: { color: colors.cyan },
+  rule: { width: 64, height: 4, borderRadius: 2, backgroundColor: colors.cyan, marginTop: 10, opacity: 0.9 },
+  tag: { color: colors.textSoft, fontFamily: "Poppins_500Medium", fontSize: 15, marginTop: 14, textAlign: "center" },
+  streakPill: {
+    marginTop: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,209,102,0.14)",
+  },
+  streakText: { color: colors.gold, fontFamily: "Poppins_600SemiBold", fontSize: 14 },
   menu: { marginTop: 36, gap: 12 },
   menuBtn: {
     flexDirection: "row",

@@ -1,6 +1,8 @@
 // Shared level-selection logic, ported from the top of prototype/app.html's <script>.
 
-import { generate, hashStr, type PhysicsAPI } from "../engine/generator";
+// Green generation itself lives in greenCache.ts — it's always async + prefetched, so there
+// deliberately isn't a synchronous generate helper here to reach for by accident.
+import { type PhysicsAPI } from "../engine/generator";
 import { inside, score, simulate, type Level } from "../engine/physics";
 
 export const BALLS = 3;
@@ -14,17 +16,6 @@ export function dayKey(d: Date): string {
 
 export function dailyNumber(today: Date): number {
   return Math.floor((today.getTime() - EPOCH.getTime()) / 864e5) + 1;
-}
-
-export function generateDaily(today: Date): { level: Level; dailyN: number; day: string } {
-  const day = dayKey(today);
-  const { level } = generate(hashStr("daily-" + day), 0.35, P);
-  return { level, dailyN: dailyNumber(today), day };
-}
-
-export function generateCampaign(levelNo: number): Level {
-  const { level } = generate(7000 + levelNo, Math.min(1, (levelNo - 1) / 40), P);
-  return level;
 }
 
 export function starsFor(best: number, t1: number, t2: number): 0 | 1 | 2 | 3 {
