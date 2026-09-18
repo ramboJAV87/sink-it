@@ -1,4 +1,5 @@
-import { medalFor, roundEnds } from "../round";
+import { distanceForScore, formatDistance, medalFor, roundEnds } from "../round";
+import { score } from "../../engine/physics";
 
 describe("medalFor", () => {
   const passScore = 55;
@@ -22,6 +23,29 @@ describe("medalFor", () => {
   it("is driven by the attempt, not by how close the earlier balls were", () => {
     // a great-but-not-holed first ball then a hole-out on the third is still a Par
     expect(medalFor({ holed: true, attempt: 3, best: 100, passScore })).toBe("par");
+  });
+});
+
+describe("distanceForScore", () => {
+  // Every threshold the generator can produce: Math.round(55 + diff * 15), diff in 0..1.
+  const thresholds = Array.from({ length: 16 }, (_, i) => 55 + i);
+
+  it("round-trips through the real score() for every reachable pass threshold", () => {
+    for (const points of thresholds) {
+      const dist = distanceForScore(points);
+      expect(score({ holed: false, dist })).toBe(points);
+    }
+  });
+
+  it("agrees with the known reference points of the curve", () => {
+    expect(distanceForScore(80)).toBeCloseTo(0, 10); // max proximity score is at the cup
+    expect(distanceForScore(0)).toBeCloseTo(8, 10); // scoring runs out at 8 ft
+    expect(distanceForScore(58)).toBeCloseTo(2.2, 10);
+  });
+
+  it("formats a distance the way finishing distances are already shown", () => {
+    expect(formatDistance(2.2)).toBe("2.2 ft");
+    expect(formatDistance(0.5)).toBe("6 in");
   });
 });
 

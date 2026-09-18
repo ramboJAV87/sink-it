@@ -5,13 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../navigation/types";
 import type { Level, SimResult } from "../engine/physics";
 import { GreenCanvas } from "../render/GreenCanvas";
+import { LoadingGreen } from "../render/LoadingGreen";
 import type { BallOutcome } from "../render/GreenGame";
 import { useReduceMotion } from "../hooks/useReduceMotion";
 import { colors } from "../theme/colors";
 import { BALLS, starsFor, targets } from "../game/session";
-import { MEDALS, medalFor, roundEnds, type Medal } from "../game/round";
+import { MEDALS, distanceForScore, formatDistance, medalFor, roundEnds, type Medal } from "../game/round";
 import { RoundOverlay } from "./RoundOverlay";
-import { campaignGreen, dailyGreen, prefetchCampaign } from "../game/greenCache";
+import { campaignGreen, dailyGreen, prefetchCampaign, setGenerationPaused } from "../game/greenCache";
 import { getCampaignLevel, getDailyResult, recordGreenResult, saveDailyResult, setCampaignLevel } from "../db/db";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Play">;
@@ -26,6 +27,7 @@ interface RoundResult {
   missed?: boolean;
   headline: string;
   detail: string;
+  note?: string;
 }
 
 function fmtDist(dist: number): string {
@@ -67,6 +69,11 @@ export default function PlayScreen({ route, navigation }: Props) {
       } else if (route.params.mode === "play") {
         const L = await campaignGreen(route.params.levelNo);
         if (cancelled) return;
+        // Warm the NEXT green as soon as this one is playable, not when the round ends. A
+        // first-ball hole-out now ends a round in seconds, so waiting until the result screen
+        // left almost no window; reading the brief and taking the first shot is the biggest
+        // idle stretch available. It pauses itself while a ball is rolling.
+        prefetchCampaign(route.params.levelNo + 1);
         setLevel(L);
         setBalls(BALLS);
       } else {
@@ -82,11 +89,15 @@ export default function PlayScreen({ route, navigation }: Props) {
     load();
     return () => {
       cancelled = true;
+      // leaving mid-roll must not strand background generation in the paused state
+      setGenerationPaused(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params]);
 
   const { t1, t2 } = useMemo(() => (level ? targets(level) : { t1: 55, t2: 73 }), [level]);
+  // the pass threshold expressed as a distance, which is the only version a player can act on
+  const passDistance = useMemo(() => formatDistance(distanceForScore(t1)), [t1]);
 
   useEffect(() => {
     if (!level) return;
@@ -108,9 +119,12 @@ export default function PlayScreen({ route, navigation }: Props) {
   function handleRollStart() {
     setMessage("Rolling…");
     setResultLine(null);
+    // A solver candidate is a 15-85ms indivisible chunk; keep it out of the roll animation.
+    setGenerationPaused(true);
   }
 
   async function handleOutcome(o: BallOutcome, holed: boolean) {
+    setGenerationPaused(false); // ball has settled — background generation can resume
     if (!level) return;
     const attempt = outcomes.length + 1; // 1-based: the ball that produced this result
     const nextOutcomes = [...outcomes, { result: o.result, points: o.points }];
@@ -146,7 +160,7 @@ export default function PlayScreen({ route, navigation }: Props) {
     }
 
     if (!ended) {
-      const need = `${t1} to pass, hole it for a medal`;
+      const need = `inside ${passDistance} to pass, hole it for a medal`;
       setMessage(
         o.result.lipped
           ? `Too much pace — it ran over the cup. ${o.ballsLeft} ball${o.ballsLeft > 1 ? "s" : ""} left, ${need}.`
@@ -161,11 +175,11 @@ export default function PlayScreen({ route, navigation }: Props) {
       medal,
       missed: !medal,
       headline: medal ? MEDALS[medal].label : "Not this time",
-      detail: medal ? `${o.best} pts` : `Best ${fmtDist(closest)} away · needed ${t1}`,
+      detail: medal ? `${o.best} pts` : `Best ${fmtDist(closest)} away`,
+      // "needed 58" means nothing on its own — say what that is in feet.
+      note: medal ? undefined : `Needed ${t1} pts — inside ${passDistance}`,
     });
-    setMessage(medal ? `${MEDALS[medal].label}! ${MEDALS[medal].blurb}.` : `Out of balls. You needed ${t1} to pass.`);
-    // They're reading the result — genuinely idle time, and the likely next tap is "Next green".
-    if (route.params.mode === "play" && medal) prefetchCampaign(route.params.levelNo + 1);
+    setMessage(medal ? `${MEDALS[medal].label}! ${MEDALS[medal].blurb}.` : `Out of balls. You needed to finish inside ${passDistance}.`);
   }
 
   function onNext() {
@@ -210,7 +224,7 @@ export default function PlayScreen({ route, navigation }: Props) {
   if (!level) {
     return (
       <View style={[styles.loading, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <Text style={styles.loadingText}>Reading the green…</Text>
+        <LoadingGreen reduceMotion={reduceMotion} />
       </View>
     );
   }
@@ -257,7 +271,7 @@ export default function PlayScreen({ route, navigation }: Props) {
             small chips at the very bottom of the scroll. */}
         <View style={styles.brief}>
           <Text style={styles.briefTitle}>
-            {mode === "daily" ? "All 3 balls count · max 300" : `Hole it for a medal · ${t1}+ to pass`}
+            {mode === "daily" ? "All 3 balls count · max 300" : `Hole it for a medal · finish inside ${passDistance} to pass`}
           </Text>
           <Text style={styles.briefBody}>
             {mode === "daily"
@@ -319,6 +333,7 @@ export default function PlayScreen({ route, navigation }: Props) {
           missed={roundResult.missed}
           headline={roundResult.headline}
           detail={roundResult.detail}
+          note={roundResult.note}
           actions={overlayActions}
           onHome={() => navigation.navigate("Home")}
         />
@@ -331,7 +346,6 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.ink },
   content: { padding: 14, paddingBottom: 24 },
   loading: { flex: 1, backgroundColor: colors.ink, alignItems: "center", justifyContent: "center" },
-  loadingText: { color: colors.lime, fontFamily: "Poppins_700Bold", fontSize: 18 },
   back: { color: colors.textSoft, fontFamily: "Poppins_600SemiBold", fontSize: 14, paddingVertical: 6 },
   header: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginTop: 4 },
   title: { color: "#fff", fontFamily: "Poppins_700Bold", fontSize: 22 },

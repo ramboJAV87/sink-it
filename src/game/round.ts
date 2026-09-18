@@ -37,6 +37,21 @@ export function medalFor(opts: { holed: boolean; attempt: number; best: number; 
   return best >= passScore ? "bogey" : null;
 }
 
+/**
+ * Inverse of the proximity score in engine/physics.ts: `80 * max(0, 1 - dist/8)`.
+ * Nothing here changes that formula — this just reads it backwards so a point threshold can
+ * be shown as a distance, which is the only form a player has any intuition for.
+ * (A holed ball scores 100 and isn't on this curve; thresholds are always <= 70, so they are.)
+ */
+export function distanceForScore(points: number): number {
+  return 8 * (1 - points / 80);
+}
+
+/** "2.2 ft" / "9 in" — the same phrasing used for a ball's finishing distance. */
+export function formatDistance(feet: number): string {
+  return feet < 1 ? `${Math.round(feet * 12)} in` : `${feet.toFixed(1)} ft`;
+}
+
 /** Whether the round is over after this ball. Daily never ends early — all three always count. */
 export function roundEnds(opts: { mode: GameMode; holed: boolean; ballsLeft: number }): boolean {
   const { mode, holed, ballsLeft } = opts;

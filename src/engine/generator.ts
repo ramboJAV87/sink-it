@@ -149,6 +149,12 @@ export function solve(L: Level, P: PhysicsAPI, target: number, step: number): So
 export interface GenerateOpts {
   step?: number;
   maxTries?: number;
+  /**
+   * Awaited between candidate attempts. Lets the host hand the thread back — and hold it
+   * back — while the UI is busy. One candidate is indivisible, so this is the only point
+   * where generation can be interrupted.
+   */
+  onYield?: () => Promise<void> | void;
 }
 
 export interface GenerateResult {
@@ -226,8 +232,9 @@ export function generate(seed: number, diff: number, P: PhysicsAPI, opts: Genera
 // from this plus prefetching ahead of time (see src/game/greenCache.ts).
 export async function generateAsync(seed: number, diff: number, P: PhysicsAPI, opts: GenerateOpts = {}): Promise<GenerateResult> {
   const run = beginGenerate(seed, diff, opts);
+  const onYield = opts.onYield ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
   while (stepGenerate(run, P)) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await onYield();
   }
   return endGenerate(run, seed, diff);
 }

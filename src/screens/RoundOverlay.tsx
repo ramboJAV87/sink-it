@@ -16,6 +16,8 @@ interface Props {
   missed?: boolean;
   headline: string;
   detail: string;
+  /** secondary line under the score — e.g. what the pass threshold meant in feet */
+  note?: string;
   actions: Action[];
   onHome: () => void;
 }
@@ -25,7 +27,7 @@ interface Props {
  * and not part of the scrolling page — testers were finishing rounds without realising,
  * because the result and its buttons sat below the fold.
  */
-export function RoundOverlay({ medal, missed, headline, detail, actions, onHome }: Props) {
+export function RoundOverlay({ medal, missed, headline, detail, note, actions, onHome }: Props) {
   return (
     <View style={styles.scrim}>
       <View style={styles.card}>
@@ -40,6 +42,7 @@ export function RoundOverlay({ medal, missed, headline, detail, actions, onHome 
         <Text style={styles.headline}>{headline}</Text>
         <Text style={styles.detail}>{detail}</Text>
         {medal && <Text style={styles.blurb}>{MEDALS[medal].blurb}</Text>}
+        {note && <Text style={styles.blurb}>{note}</Text>}
 
         <View style={styles.actions}>
           {actions.map((a) => (
