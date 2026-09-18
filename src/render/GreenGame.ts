@@ -228,10 +228,14 @@ export class GreenGame {
   }
 
   layout(widthDp: number, heightDp: number, dpr: number) {
+    // A native onLayout callback and React's effects have no guaranteed ordering, so this can
+    // land before setup() has handed us a level — remember the size and bail. GreenCanvas
+    // re-applies the stored size immediately after setup(), so nothing is lost either way.
     this.widthDp = widthDp;
     this.heightDp = heightDp;
-    this.scale = widthDp / this.L.W;
     this.dpr = dpr;
+    if (!this.L) return;
+    this.scale = widthDp / this.L.W;
     this.buildBackgroundImage(Math.round(widthDp * dpr), Math.round(heightDp * dpr), dpr);
     // cached trail geometry is in dp, so a new scale invalidates it
     this.trailPaths = this.trails.map((t) => this.buildTrailPath(t));

@@ -61,6 +61,10 @@ export function GreenCanvas({ level, mode, ballsCount, reduceMotion, callbacks, 
   const sizeRef = useRef({ width: 0, height: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
 
+  // setup() (effect) and layout() (native onLayout) can arrive in either order — React makes
+  // no promise about that, and which one wins differs between a cold mount and a screen
+  // replace. So each side does its own thing and then re-applies the other: setup() always
+  // re-lays-out with the last known size, and layout() is a no-op until a level exists.
   useEffect(() => {
     gameRef.current!.setup(level, mode, ballsCount);
     if (sizeRef.current.width > 0) {
